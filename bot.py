@@ -74,14 +74,11 @@ app = ApplicationBuilder().token("8273914318:AAFyc_DDcB5hxAohUo2Wc8p3cI4V3Zh4Qbk
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-print("Бот запущен...")
-app.run_polling()
-
-
 import threading
 from flask import Flask
 import os
 
+# Flask (для Render)
 app_flask = Flask(__name__)
 
 @app_flask.route("/")
@@ -92,8 +89,10 @@ def run_web():
     port = int(os.environ.get("PORT", 10000))
     app_flask.run(host="0.0.0.0", port=port)
 
-# запускаем Flask в отдельном потоке
+# запускаем Flask В ОТДЕЛЬНОМ ПОТОКЕ
 threading.Thread(target=run_web).start()
 
+
+# 🚀 запуск бота
 print("Бот запущен...")
 app.run_polling(drop_pending_updates=True)
