@@ -76,3 +76,24 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 print("Бот запущен...")
 app.run_polling()
+
+
+import threading
+from flask import Flask
+import os
+
+app_flask = Flask(__name__)
+
+@app_flask.route("/")
+def home():
+    return "Бот работает!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app_flask.run(host="0.0.0.0", port=port)
+
+# запускаем Flask в отдельном потоке
+threading.Thread(target=run_web).start()
+
+print("Бот запущен...")
+app.run_polling(drop_pending_updates=True)
