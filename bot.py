@@ -231,7 +231,7 @@ async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await handle(update, context)
 
 # ====== Telegram ======
-app = ApplicationBuilder().token("ТВОЙ_ТОКЕН").build()
+app = ApplicationBuilder().token("8273914318:AAFyc_DDcB5hxAohUo2Wc8p3cI4V3Zh4Qbk").build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, main_handler))
