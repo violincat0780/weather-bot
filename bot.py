@@ -1,8 +1,11 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 import requests
+import threading
+from flask import Flask
+import os
 
-# 🔤 транслитерация (из твоего проекта)
+# 🔤 транслитерация
 def translit(text):
     table = {
         "а":"a","б":"b","в":"v","г":"g","д":"d","е":"e","ё":"e","ж":"zh",
@@ -12,24 +15,23 @@ def translit(text):
     }
     return "".join(table.get(c, c) for c in text.lower())
 
-# 🌦 функция погоды
-def get_weather(city):
+# 🌦 описание погоды
+def get_weather_info(code):
+    if code == 0:
+        return "Ясно ☀"
+    elif code <= 3:
+        return "Облачно ⛅"
+    elif code < 60:
+        return "Туман 🌫"
+    elif code < 70:
+        return "Дождь 🌧"
+    elif code < 80:
+        return "Снег ❄"
+    return "Шторм 🌪"
 
-    # если русский — переводим
-    if any("а" <= c.lower() <= "я" for c in city):
-        city = translit(city)
+# 🌦 получение данных
+def get_weather_by_coords(city_data):
 
-    # гео
-    geo = requests.get(
-        f"https://geocoding-api.open-meteo.com/v1/search?name={city}"
-    ).json()
-
-    if "results" not in geo:
-        return "❌ Город не найден"
-
-    city_data = geo["results"][0]
-
-    # погода
     weather_data = requests.get(
         f"https://api.open-meteo.com/v1/forecast?latitude={city_data['latitude']}&longitude={city_data['longitude']}&current_weather=true"
     ).json()
@@ -39,7 +41,7 @@ def get_weather(city):
 
     weather = weather_data["current_weather"]
 
-    # вода
+    # 🌊 вода
     water_temp = None
     try:
         water_data = requests.get(
@@ -51,10 +53,16 @@ def get_weather(city):
     except:
         pass
 
-    # собираем ответ
-    text = f"""📍 {city_data['name']}
+    # 📊 данные
+    status = get_weather_info(weather["weathercode"])
+    day = "День 🌞" if weather["is_day"] else "Ночь 🌙"
+
+    text = f"""📍 {city_data['name']} ({city_data.get('admin1', '')}, {city_data.get('country', '')})
+
 🌡 Температура: {weather['temperature']}°C
-💨 Ветер: {weather['windspeed']} км/ч"""
+💨 Ветер: {weather['windspeed']} км/ч
+🌦 {status}
+🕒 {day}"""
 
     if water_temp:
         text += f"\n🌊 Вода: {water_temp}°C"
@@ -62,23 +70,91 @@ def get_weather(city):
     return text
 
 
-# 📩 обработка сообщений
+# 📩 /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Привет!\nНапиши название города, и я покажу погоду 🌦"
+    )
+
+
+# 📩 обработка
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     city = update.message.text
-    result = get_weather(city)
+
+    # транслит
+    if any("а" <= c.lower() <= "я" for c in city):
+        city = translit(city)
+
+    geo = requests.get(
+        f"https://geocoding-api.open-meteo.com/v1/search?name={city}"
+    ).json()
+
+    if "results" not in geo:
+        await update.message.reply_text("❌ Город не найден")
+        return
+
+    # список городов
+    results = geo["results"]
+
+    # если несколько — показываем выбор
+    if len(results) > 1:
+        context.user_data["cities"] = results
+
+        keyboard = [
+            [f"{i+1}. {c['name']} ({c.get('admin1','')}, {c.get('country','')})"]
+            for i, c in enumerate(results[:5])
+        ]
+
+        await update.message.reply_text(
+            "👇 Выберите город:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        context.user_data["step"] = "choose_city"
+        return
+
+    # если один — сразу погода
+    result = get_weather_by_coords(results[0])
     await update.message.reply_text(result)
 
 
-# 🚀 запуск бота
+# 📍 выбор города
+async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("step") != "choose_city":
+        return False
+
+    text = update.message.text
+
+    try:
+        index = int(text.split(".")[0]) - 1
+        city_data = context.user_data["cities"][index]
+
+        result = get_weather_by_coords(city_data)
+        await update.message.reply_text(result)
+
+        context.user_data.clear()
+        return True
+    except:
+        return False
+
+
+# 📩 общий обработчик
+async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await handle_choice(update, context):
+        return
+
+    await handle_message(update, context)
+
+
+# ===== Telegram =====
+
 app = ApplicationBuilder().token("8273914318:AAFyc_DDcB5hxAohUo2Wc8p3cI4V3Zh4Qbk").build()
 
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, main_handler))
 
-import threading
-from flask import Flask
-import os
 
-# Flask (для Render)
+# ===== Flask (Render) =====
+
 app_flask = Flask(__name__)
 
 @app_flask.route("/")
@@ -89,10 +165,9 @@ def run_web():
     port = int(os.environ.get("PORT", 10000))
     app_flask.run(host="0.0.0.0", port=port)
 
-# запускаем Flask В ОТДЕЛЬНОМ ПОТОКЕ
 threading.Thread(target=run_web).start()
 
 
-# 🚀 запуск бота
+# 🚀 запуск
 print("Бот запущен...")
 app.run_polling(drop_pending_updates=True)
