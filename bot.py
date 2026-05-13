@@ -1,9 +1,7 @@
+
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 import requests
-import threading
-from flask import Flask
-import os
 
 # ===== транслит =====
 def translit(text):
@@ -29,40 +27,23 @@ def get_weather_info(code):
     elif code < 80: return "❄ Снег"
     return "🌪 Шторм"
 
-# ===== избранное =====
+# ===== память =====
 favorites = {}
 
-# ===== текущая погода =====
+# ===== погода =====
 def get_weather(city):
     data = requests.get(
         f"https://api.open-meteo.com/v1/forecast?latitude={city['latitude']}&longitude={city['longitude']}&current_weather=true"
     ).json()
 
-    weather = data["current_weather"]
-
-    # вода
-    water = None
-    try:
-        water_data = requests.get(
-            f"https://api.open-meteo.com/v1/forecast?latitude={city['latitude']}&longitude={city['longitude']}&hourly=sea_surface_temperature"
-        ).json()
-
-        water = water_data["hourly"]["sea_surface_temperature"][0]
-    except:
-        pass
-
-    status = get_weather_info(weather["weathercode"])
-    day = "🌞 День" if weather["is_day"] else "🌙 Ночь"
+    w = data["current_weather"]
 
     text = f"""📍 {city['name']} ({city.get('admin1','')}, {city.get('country','')})
 
-🌡 Температура: {weather['temperature']}°C
-💨 Ветер: {weather['windspeed']} км/ч
-🌦 Погода: {status}
-🕒 {day}"""
-
-    if water:
-        text += f"\n🌊 Вода: {water}°C"
+🌡 Температура: {w['temperature']}°C
+💨 Ветер: {w['windspeed']} км/ч
+🌦 Погода: {get_weather_info(w['weathercode'])}
+🕒 {"🌞 День" if w["is_day"] else "🌙 Ночь"}"""
 
     return text
 
@@ -83,10 +64,9 @@ def get_forecast(city):
     text = "📅 Прогноз на 3 дня:\n\n"
 
     for i in range(3):
-        status = get_weather_info(codes[i])
         text += f"{format_date(days[i])}\n"
-        text += f"{status}\n"
-        text += f"🌡 {min_t[i]}°C — {max_t[i]}°C\n\n"
+        text += f"{get_weather_info(codes[i])}\n"
+        text += f"🌡 {min_t[i]} — {max_t[i]}°C\n\n"
 
     return text
 
@@ -96,8 +76,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "👋 Привет!\n\n"
-        "Я покажу погоду в любом городе 🌍\n\n"
-        "👉 Нажми «🌦 Погода» или просто напиши город",
+        "Я покажу погоду 🌍\n\n"
+        "👉 Нажми кнопку или напиши город",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
 
@@ -108,9 +88,10 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # меню
     if text == "🌦 Погода":
-        await update.message.reply_text("Введите название города:")
+        await update.message.reply_text("Напиши город:")
         return
 
+    # избранное
     if text == "⭐ Избранное":
         fav = favorites.get(user_id, [])
 
@@ -118,13 +99,24 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Нет избранных")
             return
 
-        msg = "\n".join([f"📍 {c['name']} ({c.get('admin1','')}, {c.get('country','')})" for c in fav])
+        msg = "\n".join([f"📍 {c['name']} ({c['country']})" for c in fav])
         await update.message.reply_text(msg)
         return
 
-    # кнопки
+    # прогноз
+    if text == "📅 Прогноз":
+        city = context.user_data.get("city")
+
+        if not city:
+            await update.message.reply_text("Сначала выбери город")
+            return
+
+        await update.message.reply_text(get_forecast(city))
+        return
+
+    # добавить
     if text == "⭐ Добавить":
-        city = context.user_data.get("last_city")
+        city = context.user_data.get("city")
 
         if not city:
             await update.message.reply_text("Сначала выбери город")
@@ -136,16 +128,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             favorites[user_id].append(city)
 
         await update.message.reply_text("⭐ Добавлено")
-        return
-
-    if text == "📅 Прогноз":
-        city = context.user_data.get("last_city")
-
-        if not city:
-            await update.message.reply_text("Сначала выбери город")
-            return
-
-        await update.message.reply_text(get_forecast(city))
         return
 
     # ===== поиск =====
@@ -160,83 +142,21 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Город не найден")
         return
 
-    results = geo["results"]
+    city = geo["results"][0]
+    context.user_data["city"] = city
 
-    # выбор города
-    if len(results) > 1:
-        context.user_data["cities"] = results
-        context.user_data["step"] = "choose"
-
-        keyboard = [
-            [f"{i+1}. {c['name']} ({c.get('admin1','')}, {c.get('country','')})"]
-            for i, c in enumerate(results[:5])
-        ]
-
-        await update.message.reply_text(
-            "👇 Выберите город:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-        return
-
-    # сразу погода
-    city = results[0]
-    context.user_data["last_city"] = city
-
-    keyboard = [["⭐ Добавить", "📅 Прогноз"], ["🏠 Меню"]]
+    keyboard = [["⭐ Добавить", "📅 Прогноз"]]
 
     await update.message.reply_text(
         get_weather(city),
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
 
-# ===== выбор из списка =====
-async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("step") != "choose":
-        return False
-
-    try:
-        index = int(update.message.text.split(".")[0]) - 1
-        city = context.user_data["cities"][index]
-
-        context.user_data["last_city"] = city
-        context.user_data["step"] = None
-
-        keyboard = [["⭐ Добавить", "📅 Прогноз"], ["🏠 Меню"]]
-
-        await update.message.reply_text(
-            get_weather(city),
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-
-        return True
-    except:
-        return False
-
-# ===== главный =====
-async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if await handle_choice(update, context):
-        return
-
-    await handle(update, context)
-
 # ===== запуск =====
 app = ApplicationBuilder().token("8273914318:AAFyc_DDcB5hxAohUo2Wc8p3cI4V3Zh4Qbk").build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, main_handler))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-# ===== Flask =====
-app_flask = Flask(__name__)
-
-@app_flask.route("/")
-def home():
-    return "ok"
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app_flask.run(host="0.0.0.0", port=port)
-
-threading.Thread(target=run_web).start()
-
-print("Бот запущен")
+print("Бот запущен...")
 app.run_polling()
