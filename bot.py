@@ -1,4 +1,4 @@
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 import requests
 import threading
@@ -15,7 +15,12 @@ def translit(text):
     }
     return "".join(table.get(c, c) for c in text.lower())
 
-# ===== описание =====
+# ===== формат даты =====
+def format_date(date_str):
+    y, m, d = date_str.split("-")
+    return f"{d}.{m}.{y}"
+
+# ===== описание погоды =====
 def get_weather_info(code):
     if code == 0: return "☀ Ясно"
     elif code <= 3: return "⛅ Облачно"
@@ -27,7 +32,7 @@ def get_weather_info(code):
 # ===== избранное =====
 favorites = {}
 
-# ===== погода =====
+# ===== текущая погода =====
 def get_weather(city):
     data = requests.get(
         f"https://api.open-meteo.com/v1/forecast?latitude={city['latitude']}&longitude={city['longitude']}&current_weather=true"
@@ -64,17 +69,24 @@ def get_weather(city):
 # ===== прогноз =====
 def get_forecast(city):
     data = requests.get(
-        f"https://api.open-meteo.com/v1/forecast?latitude={city['latitude']}&longitude={city['longitude']}&daily=temperature_2m_max,temperature_2m_min&timezone=auto"
+        f"https://api.open-meteo.com/v1/forecast?"
+        f"latitude={city['latitude']}&longitude={city['longitude']}"
+        f"&daily=temperature_2m_max,temperature_2m_min,weathercode"
+        f"&timezone=auto"
     ).json()
 
     days = data["daily"]["time"]
     max_t = data["daily"]["temperature_2m_max"]
     min_t = data["daily"]["temperature_2m_min"]
+    codes = data["daily"]["weathercode"]
 
     text = "📅 Прогноз на 3 дня:\n\n"
 
     for i in range(3):
-        text += f"{days[i]}: {min_t[i]}°C — {max_t[i]}°C\n"
+        status = get_weather_info(codes[i])
+        text += f"{format_date(days[i])}\n"
+        text += f"{status}\n"
+        text += f"🌡 {min_t[i]}°C — {max_t[i]}°C\n\n"
 
     return text
 
@@ -83,7 +95,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [["🌦 Погода", "⭐ Избранное"]]
 
     await update.message.reply_text(
-        "👋 Привет!",
+        "👋 Привет!\n\n"
+        "Я покажу погоду в любом городе 🌍\n\n"
+        "👉 Нажми «🌦 Погода» или просто напиши город",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
 
@@ -94,7 +108,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # меню
     if text == "🌦 Погода":
-        await update.message.reply_text("Введите город:")
+        await update.message.reply_text("Введите название города:")
         return
 
     if text == "⭐ Избранное":
@@ -104,11 +118,11 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Нет избранных")
             return
 
-        msg = "\n".join([f"{c['name']} ({c['country']})" for c in fav])
+        msg = "\n".join([f"📍 {c['name']} ({c.get('admin1','')}, {c.get('country','')})" for c in fav])
         await update.message.reply_text(msg)
         return
 
-    # кнопки после выбора
+    # кнопки
     if text == "⭐ Добавить":
         city = context.user_data.get("last_city")
 
@@ -154,12 +168,12 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"] = "choose"
 
         keyboard = [
-            [f"{i+1}. {c['name']} ({c.get('country','')})"]
+            [f"{i+1}. {c['name']} ({c.get('admin1','')}, {c.get('country','')})"]
             for i, c in enumerate(results[:5])
         ]
 
         await update.message.reply_text(
-            "Выберите город:",
+            "👇 Выберите город:",
             reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
         return
@@ -168,7 +182,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     city = results[0]
     context.user_data["last_city"] = city
 
-    keyboard = [["⭐ Добавить", "📅 Прогноз"]]
+    keyboard = [["⭐ Добавить", "📅 Прогноз"], ["🏠 Меню"]]
 
     await update.message.reply_text(
         get_weather(city),
@@ -185,9 +199,9 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         city = context.user_data["cities"][index]
 
         context.user_data["last_city"] = city
-        context.user_data["step"] = None  # 👈 ВАЖНО
+        context.user_data["step"] = None
 
-        keyboard = [["⭐ Добавить", "📅 Прогноз"]]
+        keyboard = [["⭐ Добавить", "📅 Прогноз"], ["🏠 Меню"]]
 
         await update.message.reply_text(
             get_weather(city),
